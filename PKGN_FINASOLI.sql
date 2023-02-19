@@ -1,0 +1,627 @@
+CREATE OR REPLACE PACKAGE DICEL.PKGN_FINASOLI
+IS
+   
+    /***************************************************************************************************
+     AUTOR               : YMELENDEZ
+     FECHA               : 04/01/2021
+     DESCRIPCION         : procedimiento encargado de crear financiacion simulada
+    ****************************************************************************************************/    
+    PROCEDURE pro_detalleacuerdosimulado (ca_solicodi VARCHAR2, ca_terminal VARCHAR2 DEFAULT 'SERVIDOR');    
+
+
+    /***************************************************************************************************
+     AUTOR               : YMELENDEZ
+     FECHA               : 08/01/2021
+     DESCRIPCION         : procedimiento encargado de crear simulacion de intereses
+    ****************************************************************************************************/    
+    FUNCTION fun_interessimulado (ca_cliecodi   VARCHAR2, 
+                                  nu_concepto   NUMBER,
+                                  da_fechinicio DATE, 
+                                  da_fechfinal  DATE,
+                                  nu_bases       NUMBER, 
+                                  ca_terminal   VARCHAR2 DEFAULT 'SERVIDOR'
+                                  ) RETURN ty_intesimu;    
+
+END pkgn_finasoli;
+/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CREATE OR REPLACE PACKAGE BODY DICEL.PKGN_FINASOLI
+IS
+    
+    /***************************************************************************************************
+     AUTOR               : YMELENDEZ
+     FECHA               : 04/01/2021
+     DESCRIPCION         : procedimiento encargado de crear financiacion simulada
+    ****************************************************************************************************/    
+        PROCEDURE pro_detalleacuerdosimulado (ca_solicodi VARCHAR2, ca_terminal VARCHAR2 DEFAULT 'SERVIDOR')
+    IS
+        rg_solisimu   fc_solisimu%ROWTYPE;
+        rg_finasimu   fc_finasimu%ROWTYPE;
+        nu_valoproy   NUMBER;
+        nu_valoimpu   NUMBER;
+        nu_saldo      NUMBER;
+        nu_cuota      NUMBER;
+        nu_interes    NUMBER;
+
+        --Este cursor me entrega el costo del proyecto y el valor del iva
+        CURSOR cu_valoproy IS
+              SELECT SUM ( ( (fc_condvsos.covsunid * fc_condvsos.covsvaun)))
+                         valoproy,
+                     SUM (fc_condvsos.covsvaim) valoimpu
+                FROM fc_condvsos
+               WHERE covssoli = rg_solisimu.sosicons 
+            GROUP BY covssoli;
+
+        CURSOR cu_valosafi IS
+           SELECT SUM(fisivalo)
+             FROM fc_finasimu
+            WHERE fisicoso = rg_solisimu.sosicons;
+       va_valofina  NUMBER;
+    BEGIN
+        pkgv_excepcion.pro_iniciobloque;
+        rg_solisimu := pkgb_solisimu.fun_consultarporclave (ca_solicodi);
+
+        IF rg_solisimu.sositaef = 0
+        THEN
+            rg_solisimu.sositaef := 1;
+        END IF;
+
+        IF rg_solisimu.sositano = 0
+        THEN
+            IF rg_solisimu.sosipain = 'S'
+            THEN
+                rg_solisimu.sositano := 1;
+            END IF;
+        END IF;
+
+        IF rg_solisimu.sosiptos = 0
+        THEN
+            rg_solisimu.sosiptos := 1;
+        END IF;
+
+        IF rg_solisimu.sosidtf = 0
+        THEN
+            rg_solisimu.sosidtf := 1;
+        END IF;
+
+        OPEN cu_valoproy;
+
+        FETCH cu_valoproy INTO nu_valoproy, nu_valoimpu;
+
+        CLOSE cu_valoproy;
+
+        rg_finasimu.fisicoso := rg_solisimu.sosicons;
+        rg_finasimu.fisipago := 'N';
+        nu_saldo := nu_valoproy;
+        rg_finasimu.fisinucu := 0;
+
+        IF rg_solisimu.sosiacpa = 'S' THEN
+            rg_solisimu.sosifere := TRUNC (rg_solisimu.sosifere);
+            OPEN cu_valosafi;
+            FETCH cu_valosafi INTO va_valofina;
+            CLOSE cu_valosafi;
+            va_valofina := NULL;
+        ELSE
+            rg_solisimu.sosifere := TRUNC (rg_solisimu.sosifere) + 30;
+        END IF;
+
+        DELETE FROM fc_finasimu
+              WHERE fisicoso = rg_finasimu.fisicoso;
+
+        IF rg_solisimu.sosipain = 'S'
+        THEN
+            WHILE     nu_saldo > 0
+                  AND rg_finasimu.fisinucu < rg_solisimu.sosinucu
+            LOOP
+                rg_finasimu.fisinucu := rg_finasimu.fisinucu + 1;
+
+                IF rg_finasimu.fisinucu = 1
+                THEN
+                    rg_finasimu.fisifepa := TRUNC (rg_solisimu.sosifere);
+                    rg_finasimu.fisivalo :=
+                          ABS (ROUND (pkgn_finasoli.fun_pmt (
+                                          ( (rg_solisimu.sositano / 100)),
+                                          rg_solisimu.sosinucu,
+                                          nu_valoproy,
+                                          0,
+                                          0),
+                                      0))
+                        + nu_valoimpu;
+                ELSE
+                    rg_finasimu.fisifepa :=
+                          TRUNC (rg_solisimu.sosifere)
+                        + (30 * (rg_finasimu.fisinucu - 1));
+                    rg_finasimu.fisivalo :=
+                        ABS (ROUND (pkgn_finasoli.fun_pmt (
+                                        ( (rg_solisimu.sositano / 100)),
+                                        rg_solisimu.sosinucu,
+                                        nu_valoproy,
+                                        0,
+                                        0),
+                                    0));
+                END IF;
+
+                rg_finasimu.fisiinte :=
+                    ABS (ROUND (pkgn_finasoli.fun_ipmt (
+                                    ( (rg_solisimu.sositano / 100)),
+                                    rg_finasimu.fisinucu,
+                                    rg_solisimu.sosinucu,
+                                    nu_valoproy,
+                                    0,
+                                    0)));
+                rg_finasimu.fisiabca :=
+                    ABS (ROUND (pkgn_finasoli.fun_ppmt (
+                                    ( (rg_solisimu.sositano / 100)),
+                                    rg_finasimu.fisinucu,
+                                    rg_solisimu.sosinucu,
+                                    nu_valoproy,
+                                    0,
+                                    0)));
+
+                nu_saldo := nu_saldo - rg_finasimu.fisiabca;
+
+                IF rg_finasimu.fisinucu = rg_solisimu.sosinucu
+                THEN
+                    rg_finasimu.fisisald := 0;
+                ELSE
+                    rg_finasimu.fisisald := nu_saldo;
+                END IF;
+
+                rg_finasimu.fisiterm := ca_terminal;
+                rg_finasimu.fisiempr := rg_solisimu.sosiempr;
+
+                pkgb_finasimu.pro_insertar (rg_finasimu);
+            END LOOP;
+        ELSE
+            nu_cuota := nu_valoproy / rg_solisimu.sosinucu;
+
+            WHILE     nu_saldo > 0
+                  AND rg_finasimu.fisinucu < rg_solisimu.sosinucu
+            LOOP
+                rg_finasimu.fisinucu := rg_finasimu.fisinucu + 1;
+
+                IF rg_finasimu.fisinucu = 1
+                THEN
+                    rg_finasimu.fisifepa := TRUNC (rg_solisimu.sosifere);
+                    rg_finasimu.fisivalo := nu_cuota + nu_valoimpu;
+                ELSE
+                    rg_finasimu.fisifepa :=
+                          TRUNC (rg_solisimu.sosifere)
+                        + (30 * (rg_finasimu.fisinucu - 1));
+                    rg_finasimu.fisivalo := nu_cuota;
+                END IF;
+
+                rg_finasimu.fisiinte := 0;
+                rg_finasimu.fisiabca := nu_cuota;
+
+                nu_saldo := nu_saldo - rg_finasimu.fisiabca;
+
+                IF rg_finasimu.fisinucu = rg_solisimu.sosinucu
+                THEN
+                    rg_finasimu.fisisald := 0;
+                ELSE
+                    rg_finasimu.fisisald := nu_saldo;
+                END IF;
+
+                rg_finasimu.fisiterm := ca_terminal;
+                rg_finasimu.fisiempr := rg_solisimu.sosiempr;
+
+                pkgb_finasimu.pro_insertar (rg_finasimu);
+            END LOOP;
+        END IF;
+
+        COMMIT;
+        pkgv_excepcion.pro_finbloque;
+    EXCEPTION
+        WHEN pkgv_excepcion.error
+        THEN
+            pkgv_excepcion.pro_finbloque;
+
+            IF (pkgv_excepcion.fun_getnivelerror = 0)
+            THEN
+                ROLLBACK;
+                raise_application_error (
+                    -20777,
+                    pkgv_excepcion.fun_getmensaje ('ERROR'));
+            ELSE
+                ROLLBACK;
+                RAISE;
+            END IF;
+        WHEN OTHERS
+        THEN
+            pkgv_excepcion.pro_finbloque;
+
+            IF (pkgv_excepcion.fun_getnivelerror = 0)
+            THEN
+                ROLLBACK;
+                raise_application_error (
+                    -20777,
+                    pkgv_excepcion.fun_getmensaje ('OTHERS',
+                                                   SQLCODE,
+                                                   SQLERRM));
+            ELSE
+                ROLLBACK;
+                RAISE;
+            END IF;
+    END pro_detalleacuerdosimulado;  
+
+
+
+    /***************************************************************************************************
+     AUTOR               : YMELENDEZ
+     FECHA               : 08/01/2021
+     DESCRIPCION         : procedimiento encargado de crear simulacion de intereses
+    ****************************************************************************************************/    
+    FUNCTION fun_interessimulado (ca_cliecodi   VARCHAR2, 
+                                  nu_concepto   NUMBER,
+                                  da_fechinicio DATE, 
+                                  da_fechfinal  DATE,
+                                  nu_bases       NUMBER, 
+                                  ca_terminal   VARCHAR2 DEFAULT 'SERVIDOR'
+                                  ) RETURN ty_intesimu
+    IS
+       
+       CURSOR cu_exceptuamora (
+         ca_cliecodi   VARCHAR2,
+         ca_perifact   VARCHAR2
+         )
+      IS
+         SELECT *
+           FROM fc_exclmora
+          WHERE exmoclie = ca_cliecodi
+            AND exmopefa = ca_perifact
+            AND exmoempr = ca_empresa; 
+            
+            
+      CURSOR cu_pago_factura (ca_cliente VARCHAR2, ca_tipofact VARCHAR2)
+      IS
+         SELECT   factcons, (fechap.paclfepa - factfeve) factfeve, factpefa,
+                  factempr, factclie, factsafa, (factvatf + infasain) base
+             FROM fc_facturas,
+                  fc_infofact,
+                  (SELECT paclclie, paclfepa
+                     FROM fc_pagoclie
+                    WHERE paclclie = ca_cliente
+                      AND paclfepa = (SELECT MAX (paclfepa)
+                                        FROM fc_pagoclie
+                                       WHERE paclclie = ca_cliente)) fechap
+            WHERE factclie = fechap.paclclie
+              AND factfeve < fechap.paclfepa
+              AND factclie = ca_cliente
+              AND facttido = ca_tipofact
+              AND factcons = infafact
+              AND factempr = infaempr
+              AND factsafa > 10
+              AND infanull = 'N'
+              AND factcons IN (
+                     SELECT MAX (factcons)
+                       FROM fc_facturas, fc_infofact
+                      WHERE factclie = ca_cliente
+                        AND facttido = ca_tipofact
+                        AND factcons = infafact
+                        AND infanull = 'N')
+         GROUP BY factcons,
+                  factfeve,
+                  fechap.paclfepa,
+                  factvatf,
+                  infasain,
+                  factpefa,
+                  factempr,
+                  factclie,
+                  factsafa;
+                          
+                  
+      CURSOR cu_pago_facturadet (ca_cliente VARCHAR2, ca_tipofact VARCHAR2)
+      IS            
+         SELECT   factcons,fechap.paclfepa pago ,factfeve vence, (fechap.paclfepa - factfeve) dias, factpefa,
+                  factempr, factclie, factsafa, (factvatf + infasain) base
+             FROM fc_facturas,
+                  fc_infofact,
+                  (SELECT paclclie, paclfepa
+                     FROM fc_pagoclie
+                    WHERE paclclie = ca_cliente
+                      AND paclfepa = (SELECT MAX (paclfepa)
+                                        FROM fc_pagoclie
+                                       WHERE paclclie = ca_cliente)) fechap
+            WHERE factclie = fechap.paclclie
+              AND factfeve < fechap.paclfepa
+              AND factclie = ca_cliente
+              AND facttido = ca_tipofact
+              AND factcons = infafact
+              AND factempr = infaempr
+              AND factsafa > 10
+              AND infanull = 'N'
+              AND factcons IN (
+                     SELECT MAX (factcons)
+                       FROM fc_facturas, fc_infofact
+                      WHERE factclie = ca_cliente
+                        AND facttido = ca_tipofact
+                        AND factcons = infafact
+                        AND infanull = 'N')
+         GROUP BY factcons,
+                  factfeve,
+                  fechap.paclfepa,
+                  factvatf,
+                  infasain,
+                  factpefa,
+                  factempr,
+                  factclie,
+                  factsafa;                  
+                  
+                  
+                             
+      CURSOR cu_facturas (
+         ca_cliecodi   VARCHAR2,
+         nu_cofaconc   NUMBER,
+         ca_tipofact   VARCHAR2
+      )
+      IS
+         SELECT   factcons, factfeve, factpefa, factempr,
+                  SUM
+                     (  DECODE (cofasign,
+                                pkgn_paraapli.fun_obtieneparametro ('RESTA'), - (  NVL
+                                                                                      (cofavalo,
+                                                                                       0
+                                                                                      )
+                                                                                 + NVL
+                                                                                      (cofavaim,
+                                                                                       0
+                                                                                      )
+                                                                                ),
+                                pkgn_paraapli.fun_obtieneparametro ('SUMA'), NVL
+                                                                    (cofavalo,
+                                                                     0
+                                                                    )
+                                 + NVL (cofavaim, 0)
+                               )
+                      - NVL (cofavaab, 0)
+                      - NVL (cofacain, 0)
+                      - NVL (cofimab, 0)
+                     ) base
+             FROM fc_facturas, fc_concfact, fc_concbase
+            WHERE cofafact = factcons
+              AND cofaconc = cobacoas
+              AND cobacoba = nu_cofaconc
+              AND factclie = ca_cliecodi
+              AND factempr = cofaempr
+              AND factfeve < TRUNC (SYSDATE)
+              AND facttido = ca_tipofact
+              AND (NVL (factsafa, 0) - NVL (factvare, 0) - NVL (factcain, 0)) >
+                                                                             0
+         GROUP BY factcons, factfeve, factpefa, factempr;            
+     
+      CURSOR cu_saldocliente (ca_cliecodi VARCHAR2)
+      IS
+         SELECT cliesafa
+           FROM db_cliente
+          WHERE cliecodi = ca_cliecodi;     
+       
+       rg_cliente      db_cliente%ROWTYPE;
+       ca_tipodocu     VARCHAR2(20 BYTE);
+       nu_valor        NUMBER := 0;
+       rg_cargconc     fc_cargconc%ROWTYPE;
+       nu_tasainte     NUMBER := 0;
+       nu_saldo        NUMBER;
+       nu_dias         NUMBER := 0;
+       dt_fecha        DATE;
+       nu_base         NUMBER := 0;
+       da_fechaini     DATE;
+       da_fechafin     DATE;
+       
+    BEGIN
+        pkgv_excepcion.pro_iniciobloque;
+
+        rg_cliente := pkgb_cliente.fun_consultarporclave (ca_cliecodi);
+        ca_tipodocu := pkgn_paraapli.fun_obtieneparametro ('TIDOFACT');
+
+        IF dt_fecha IS NULL
+        THEN
+            dt_fecha := TRUNC (SYSDATE);
+        END IF;
+
+
+          OPEN cu_exceptuamora (rg_cliente.cliecodi, rgperifact.pefaanio||rgperifact.pefamesf);
+         FETCH cu_exceptuamora
+          INTO rg_exceptuamora;
+         CLOSE cu_exceptuamora;
+
+          IF rg_exceptuamora.exmoclie IS NOT NULL THEN
+            rg_exceptuamora.exmoliqu := nuvalor;
+            pkgb_exclmora.pro_actualizar(rg_exceptuamora);
+         END IF; 
+
+
+        -- Obtiene el cargo por concepto
+        rg_cargconc :=
+            pkgn_cargconc.fun_consultarporalterna (rg_cliente.cliezodc,
+                                                   rg_cliente.cliezocc,
+                                                   rg_cliente.clieestr,
+                                                   nu_concepto);
+
+
+        IF (rg_cargconc.cacotain IS NULL)
+        THEN
+            pkgv_excepcion.pro_setmensaje (
+                   'No hay una tasa de interes configurada para el departamento ('
+                || rg_cliente.cliezodc
+                || '), ciudad ('
+                || rg_cliente.cliezocc
+                || '), estrato ('
+                || rg_cliente.clieestr
+                || ') y concepto ('
+                || nu_concepto
+                || ') en la opcion (CACO) del sistema');
+            RAISE pkgv_excepcion.error;
+        END IF;
+
+
+        -- Obtiene la tasa de interes efectiva anual vigente por el cliente
+        nu_tasainte :=
+            pkgn_tasainte.fun_obtienetasainterescliente (
+                rg_cliente.cliecodi,
+                rg_cargconc.cacotain);
+
+        IF (nu_tasainte IS NULL)
+        THEN
+            pkgv_excepcion.pro_setmensaje (
+                'No hay una tasa de interes vigente para el recargo por mora');
+            RAISE pkgv_excepcion.error;
+        END IF;
+
+        -- Obtiene la tasa nominal mensual
+        nu_tasainte :=
+            pkgn_contproc.fun_tasaefectivanominal (nu_tasainte, 12);
+        -- Obtiene la tasa nominal diaria
+        nu_tasainte := nu_tasainte / 30;
+
+        -- Ajusta el saldo
+        --pkgn_saldocliente.pro_ajustasaldos(rg_cliente.cliecodi);
+
+        OPEN cu_saldocliente (rg_cliente.cliecodi);
+
+        FETCH cu_saldocliente INTO nu_saldo;
+
+        CLOSE cu_saldocliente;
+
+        IF     da_fechinicio IS NULL
+           AND da_fechfinal IS NULL
+           AND nu_bases IS NULL
+        THEN
+            IF nu_saldo = 0
+            THEN
+                FOR rg_facturas
+                    IN cu_pago_factura (rg_cliente.cliecodi, ca_tipodocu)
+                LOOP
+                    nu_dias := rg_facturas.factfeve;
+                    nu_valor :=
+                          NVL (nu_valor, 0)
+                        + (  NVL (rg_facturas.base, 0)
+                           * NVL (nu_tasainte, 0)
+                           * NVL (nu_dias, 0)
+                           / 100);
+                    nu_base := NVL (rg_facturas.base, 0);
+
+                    FOR rg_facturasdet
+                        IN cu_pago_facturadet (rg_cliente.cliecodi,
+                                               ca_tipodocu)
+                    LOOP
+                        da_fechaini := rg_facturasdet.vence;
+                        da_fechafin := rg_facturasdet.pago;
+                    END LOOP;
+                END LOOP;
+            -- Si el saldo no es cero
+            ELSE
+                FOR rg_facturas
+                    IN cu_facturas (rg_cliente.cliecodi,
+                                    nu_concepto,
+                                    ca_tipodocu)
+                LOOP
+                    IF (rg_facturas.factfeve >= rg_cliente.cliefurm)
+                    THEN
+                        nu_dias := dt_fecha - rg_facturas.factfeve;
+                        da_fechaini := rg_facturas.factfeve;
+                        da_fechafin := dt_fecha;
+                    ELSE
+                        nu_dias := dt_fecha - rg_cliente.cliefurm;
+                        da_fechaini := rg_cliente.cliefurm;
+                        da_fechafin := dt_fecha;
+                    END IF;
+
+                    nu_valor :=
+                          NVL (nu_valor, 0)
+                        + (  NVL (rg_facturas.base, 0)
+                           * NVL (nu_tasainte, 0)
+                           * NVL (nu_dias, 0)
+                           / 100);
+                    nu_base := NVL (rg_facturas.base, 0);
+                END LOOP;
+            END IF;
+        ELSE
+            nu_dias :=  da_fechfinal - da_fechinicio;
+
+            nu_valor :=
+                  NVL (nu_valor, 0)
+                + (  NVL (nu_bases, 0)
+                   * NVL (nu_tasainte, 0)
+                   * NVL (nu_dias, 0)
+                   / 100);
+                        
+            nu_base     := nu_bases;  
+            da_fechaini := da_fechinicio;
+            da_fechafin := da_fechfinal;
+        END IF;
+
+        IF nu_valor < 1
+        THEN
+            nu_valor := 0;
+        END IF;
+
+        nu_tasainte := ROUND (nu_tasainte, 10);
+
+        RETURN ty_intesimu (nu_valor,
+                            nu_dias,
+                            nu_base,
+                            nu_tasainte,
+                            da_fechaini,
+                            da_fechafin);
+
+
+        pkgv_excepcion.pro_finbloque;
+    EXCEPTION
+        WHEN pkgv_excepcion.error
+        THEN
+            pkgv_excepcion.pro_finbloque;
+
+            IF (pkgv_excepcion.fun_getnivelerror = 0)
+            THEN
+                raise_application_error (
+                    -20777,
+                    pkgv_excepcion.fun_getmensaje ('ERROR'));
+            ELSE
+                RAISE;
+            END IF;
+        WHEN OTHERS
+        THEN
+            pkgv_excepcion.pro_finbloque;
+
+            IF (pkgv_excepcion.fun_getnivelerror = 0)
+            THEN
+                raise_application_error (
+                    -20777,
+                    pkgv_excepcion.fun_getmensaje ('OTHERS',
+                                                   SQLCODE,
+                                                   SQLERRM));
+            ELSE
+                RAISE;
+            END IF;
+    END fun_interessimulado;
+END pkgn_finasoli;
+/
